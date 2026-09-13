@@ -8,7 +8,7 @@ import { isRetiredGitHubCopilotModelId } from "@omniroute/open-sse/config/provid
 
 import type { SqliteAdapter } from "./adapters/types";
 import { getDbInstance } from "./core";
-import { getProviderConnectionsCount } from "./providers";
+import { getProviderConnectionsCount, touchConnectionSyncedModelsAt } from "./providers";
 import { type JsonRecord, getKeyValue } from "./models/shared";
 import {
   normalizeSyncedAvailableModels,
@@ -580,9 +580,22 @@ export async function getActiveProvidersWithSyncedModel(modelId: string): Promis
            json_extract(synced_model.value, '$.id'),
            json_extract(synced_model.value, '$.name'),
            json_extract(synced_model.value, '$.model')
+         ) = ?
+       UNION
+       SELECT DISTINCT pc.provider AS provider
+       FROM provider_connections pc
+       JOIN key_value kv
+         ON kv.namespace = 'customModels'
+        AND kv.key = pc.provider
+       JOIN json_each(CASE WHEN json_valid(kv.value) THEN kv.value ELSE '[]' END) custom_model
+       WHERE pc.is_active = 1
+         AND COALESCE(
+           json_extract(custom_model.value, '$.id'),
+           json_extract(custom_model.value, '$.name'),
+           json_extract(custom_model.value, '$.model')
          ) = ?`
     )
-    .all(modelId) as Array<{ provider?: unknown }>;
+    .all(modelId, modelId) as Array<{ provider?: unknown }>;
 
   return rows
     .map((row) => row.provider)
@@ -602,6 +615,10 @@ export async function replaceSyncedAvailableModelsForConnection(
   const key = `${providerId}:${connectionId}`;
   const normalizedModels = normalizeSyncedAvailableModels(models, providerId);
   persistCanonicalSyncedAvailableModels(key, normalizedModels, normalizeSyncedAvailableModels);
+  // #12849: stamp the sync time on every successful sync — even a re-sync that
+  // returns an unchanged list proves the catalog is still current, so staleness
+  // gating in getActiveSyncedCatalog must not treat it as aging regardless.
+  if (connectionId) await touchConnectionSyncedModelsAt(connectionId);
   // Return the full unioned list for the provider
   return getSyncedAvailableModels(providerId);
 }

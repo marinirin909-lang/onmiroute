@@ -6,8 +6,8 @@ import {
   type AlternateFormat,
 } from "../config/providers/alternateFormats.ts";
 import {
-  CLAUDE_CLI_BILLING_VERSION,
   CLAUDE_CLI_STAINLESS_RUNTIME_VERSION,
+  getClaudeCliBillingVersion,
   mergeClientAnthropicBeta,
   normalizeAnthropicHeaderVariants,
 } from "../config/anthropicHeaders.ts";
@@ -30,7 +30,7 @@ import {
   addParamToBlocklist,
   isAutoLearnGloballyEnabled,
 } from "@/lib/db/paramFilters";
-import { applyFingerprint, isCliCompatEnabled } from "../config/cliFingerprints.ts";
+import { applyFingerprint, isCliCompatEnabled, stripInternalBodyFields } from "../config/cliFingerprints.ts";
 import { supportsClaudeMaxEffort, supportsXHighEffort } from "../config/providerModels.ts";
 import { getThinkingBudgetConfig, ThinkingMode } from "../services/thinkingBudget.ts";
 import {
@@ -86,7 +86,7 @@ import {
 } from "../services/contextManager.ts";
 import { randomUUID } from "node:crypto";
 import {
-  CLAUDE_CODE_VERSION,
+  getClaudeCodeVersion,
   CLAUDE_CODE_STAINLESS_VERSION,
   buildUserIdJson,
   getSessionId,
@@ -581,6 +581,8 @@ export class BaseExecutor {
       for (const key of optionalKeys) {
         if (cloned[key] === "") delete cloned[key];
       }
+
+      stripInternalBodyFields(cloned);
 
       return cloned;
     }
@@ -1161,7 +1163,7 @@ export class BaseExecutor {
 
           // system[0] (billing) and system[1] (sentinel) must not carry
           // cache_control — that belongs on upstream prompt blocks at [2..].
-          const billingLine = `x-anthropic-billing-header: cc_version=${CLAUDE_CLI_BILLING_VERSION}; cc_entrypoint=cli; cch=00000;`;
+          const billingLine = `x-anthropic-billing-header: cc_version=${getClaudeCliBillingVersion()}; cc_entrypoint=cli; cch=00000;`;
           const SENTINEL = "You are Claude Code, Anthropic's official CLI for Claude.";
 
           const sysBlocks: Array<Record<string, unknown>> = Array.isArray(tb.system)
@@ -1257,7 +1259,7 @@ export class BaseExecutor {
               ),
               "anthropic-dangerous-direct-browser-access": "true",
               "x-app": "cli",
-              "User-Agent": `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`,
+              "User-Agent": `claude-cli/${getClaudeCodeVersion()} (external, cli)`,
               "X-Stainless-Package-Version": CLAUDE_CODE_STAINLESS_VERSION,
               "X-Stainless-Timeout": "600",
               "accept-encoding": "gzip, deflate, br, zstd",
@@ -1393,6 +1395,7 @@ export class BaseExecutor {
           );
         }
 
+        stripInternalBodyFields(transformedBody);
         let bodyString = JSON.stringify(transformedBody);
 
         const shouldFingerprint =

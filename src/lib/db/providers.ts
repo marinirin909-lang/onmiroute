@@ -39,6 +39,7 @@ import { pickCodexConnectionForUser } from "@/lib/oauth/utils/codexConnectionSel
 import { isMicrosoftDesignerWebRetiredProviderId } from "@/shared/constants/designerWebRetirement";
 import { reconcileCodexUsageHistory } from "./providers/usageIdentityReconciliation";
 import { isRuntimeRetiredProviderId } from "@/shared/constants/providerRetirement";
+import { applyCodexChildCooldownClearOnUpdate } from "./providers/codexAccountState";
 
 /**
  * normalizeProviderSpecificData + the Codex fingerprint-seed invariant: Codex
@@ -228,6 +229,7 @@ export const PROVIDER_CONNECTIONS_COLUMNS = new Set([
   "rate_limit_overrides_json",
   "created_at",
   "updated_at",
+  "synced_models_at",
 ]);
 
 // ──────────────── Provider Connections ────────────────
@@ -514,6 +516,10 @@ export async function createProviderConnection(data: JsonRecord) {
       // (legacy rows created before this disambiguation existed).
       const incomingUsername = toStringOrNull(providerSpecificData.username);
       const incomingProfileArn = toStringOrNull(providerSpecificData.profileArn);
+      // Claude: one identity reaches its personal workspace and every Team
+      // organization with the same email and the same accountUUID, so
+      // organizationUUID is what separates the accounts.
+      const incomingOrganizationUuid = toStringOrNull(providerSpecificData.organizationUUID);
       const emailMatches = db
         .prepare(
           "SELECT * FROM provider_connections WHERE provider = ? AND auth_type = 'oauth' AND email = ?"
@@ -521,7 +527,12 @@ export async function createProviderConnection(data: JsonRecord) {
         .all(data.provider, data.email) as JsonRecord[];
       existing =
         emailMatches.find((row) =>
-          isMatchingOauthIdentity(row, incomingUsername, incomingProfileArn)
+          isMatchingOauthIdentity(
+            row,
+            incomingUsername,
+            incomingProfileArn,
+            incomingOrganizationUuid
+          )
         ) || null;
     }
   } else if (data.authType === "apikey") {
@@ -599,6 +610,7 @@ export async function createProviderConnection(data: JsonRecord) {
       _updateConnectionRow(db, existingId, encryptConnectionFields(persistence));
     })();
     backupDbFile("pre-write");
+    invalidateDbCache("connections");
     const returnedConnection = withNullableRateLimitOverrides(
       withNullableQuotaWindowThresholds(
         withNullableMaxConcurrent(cleanNulls(merged), merged),
@@ -941,11 +953,14 @@ export async function updateProviderConnection(id: string, data: JsonRecord) {
     ...data,
     updatedAt: new Date().toISOString(),
   };
-  merged.providerSpecificData = normalizeConnectionProviderSpecificData(
-    toStringOrNull(merged.provider),
-    merged.providerSpecificData,
-    merged,
-    existingCamel.providerSpecificData
+  merged.providerSpecificData = applyCodexChildCooldownClearOnUpdate(
+    data,
+    normalizeConnectionProviderSpecificData(
+      toStringOrNull(merged.provider),
+      merged.providerSpecificData,
+      merged,
+      existingCamel.providerSpecificData
+    )
   );
   // Mirror the sanitization the create path applies — keep the returned
   // object in lockstep with what we persist.
@@ -1014,64 +1029,12 @@ export async function updateProviderConnection(id: string, data: JsonRecord) {
 export {
   updateCodexScopedQuotaState,
   updateCodexScopeCooldown,
+  applyCodexChildCooldownClearOnUpdate,
+  stripCodexChildCooldownFields,
+  stripCodexChildCooldownsFromConnection,
+  hasCodexScopeCooldown,
+  liftCodexScopeCooldownOnHeadroom,
 } from "./providers/codexAccountState";
-
-/**
- * Atomic conditional clear of recoverable error state on a connection row.
- *
- * Returns true when the row was cleared, false when a concurrent writer
- * (markAccountUnavailable, connectionRecovery tick, test, etc.) changed the
- * row between the caller's snapshot read and this UPDATE — in which case the
- * clear is skipped to preserve the freshest error state. Closes the TOCTOU
- * window in the quota-recovery path.
- *
- * CAS token = (test_status, last_error_at, rate_limited_until).
- * markAccountUnavailable always bumps last_error_at on every cooldown/error
- * write, so an unchanged last_error_at reliably indicates no concurrent write.
- */
-export async function clearConnectionErrorIfUnchanged(
-  id: string,
-  expected: {
-    testStatus: string | null | undefined;
-    lastErrorAt: string | null | undefined;
-    rateLimitedUntil: string | null | undefined;
-  }
-): Promise<boolean> {
-  const db = getDbInstance() as unknown as DbLike;
-  const result = db
-    .prepare(
-      `
-    UPDATE provider_connections SET
-      test_status = 'active',
-      last_error = NULL,
-      last_error_at = NULL,
-      last_error_type = NULL,
-      last_error_source = NULL,
-      error_code = NULL,
-      rate_limited_until = NULL,
-      backoff_level = 0,
-      updated_at = ?
-    WHERE id = ?
-      AND IFNULL(test_status, '') = ?
-      AND IFNULL(last_error_at, '') = ?
-      AND IFNULL(rate_limited_until, '') = ?
-    `
-    )
-    .run(
-      new Date().toISOString(),
-      id,
-      expected.testStatus ?? "",
-      expected.lastErrorAt ?? "",
-      expected.rateLimitedUntil ?? ""
-    );
-  const applied = (result.changes ?? 0) > 0;
-  if (applied) {
-    backupDbFile("pre-write");
-    invalidateDbCache("connections");
-    bumpProxyConfigGeneration();
-  }
-  return applied;
-}
 
 /**
  * Lightweight stat bump — updates lastUsedAt and consecutiveUseCount without
@@ -1096,6 +1059,29 @@ export async function touchConnectionLastUsed(
   ).run({
     lastUsedAt: now,
     consecutiveUseCount,
+    updatedAt: now,
+    id,
+  });
+}
+
+/**
+ * #12849: stamp when a connection's synced model catalog was last written.
+ * getActiveSyncedCatalog reads this to stop treating a synced catalog as
+ * authoritative forever — a connection synced once and never refreshed
+ * silently pinned routing to that point-in-time snapshot with no staleness
+ * check. Lightweight targeted UPDATE, mirrors touchConnectionLastUsed.
+ */
+export async function touchConnectionSyncedModelsAt(id: string): Promise<void> {
+  if (!id) return;
+  const db = getDbInstance() as unknown as DbLike;
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE provider_connections SET
+      synced_models_at = @syncedModelsAt,
+      updated_at = @updatedAt
+    WHERE id = @id`
+  ).run({
+    syncedModelsAt: now,
     updatedAt: now,
     id,
   });
@@ -1173,4 +1159,5 @@ export {
   formatResetCountdown,
   isConnectionRateLimited,
   getRateLimitedConnections,
+  clearConnectionErrorIfUnchanged,
 } from "./providers/rateLimit";
