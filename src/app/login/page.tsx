@@ -2,8 +2,9 @@
 
 import { useTranslations } from "next-intl";
 
-import { useState, useEffect } from "react";
-import { Button, Input } from "@/shared/components";
+import { useState, useEffect, useRef } from "react";
+import Button from "@/shared/components/Button";
+import Input from "@/shared/components/Input";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -19,9 +20,24 @@ export default function LoginPage() {
   const [nodeVersion, setNodeVersion] = useState(null);
   const [nodeCompatible, setNodeCompatible] = useState(true);
   const router = useRouter();
+  // Component-level mounted guard shared by checkAuth and handleLogin so
+  // async completions after HMR/navigation unmount never call setState.
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
-    const raf = requestAnimationFrame(() => setMounted(true));
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setMounted(true), 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
     async function checkAuth() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -33,8 +49,11 @@ export default function LoginPage() {
         });
         clearTimeout(timeoutId);
 
+        if (!isMounted) return;
+
         if (res.ok) {
           const data = await res.json();
+          if (!isMounted || !isMountedRef.current) return;
           if (data.nodeVersion) setNodeVersion(data.nodeVersion);
           if (data.nodeCompatible === false) setNodeCompatible(false);
           if (data.authenticated === true || data.requireLogin === false) {
@@ -51,8 +70,9 @@ export default function LoginPage() {
           setOidcEnabled(false);
           setOidcDisablePasswordLogin(false);
         }
-      } catch (err) {
+      } catch (_err) {
         clearTimeout(timeoutId);
+        if (!isMounted) return;
         setHasPassword(true);
         setSetupComplete(true);
         setOidcEnabled(false);
@@ -60,6 +80,9 @@ export default function LoginPage() {
       }
     }
     checkAuth();
+    return () => {
+      isMounted = false;
+    };
   }, [router]);
 
   const handleLogin = async (e) => {
@@ -79,6 +102,7 @@ export default function LoginPage() {
         window.location.href = "/dashboard";
       } else {
         const data = await res.json();
+        if (!isMountedRef.current) return;
         // (#521) If no password is set, redirect to onboarding instead of showing an error
         if (data.needsSetup) {
           window.location.href = "/dashboard/onboarding";
@@ -86,10 +110,10 @@ export default function LoginPage() {
         }
         setError(data.error || t("invalidPassword"));
       }
-    } catch (err) {
-      setError(t("errorOccurredRetry"));
+    } catch (_err) {
+      if (isMountedRef.current) setError(t("errorOccurredRetry"));
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   };
 

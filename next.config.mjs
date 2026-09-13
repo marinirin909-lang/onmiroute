@@ -375,6 +375,19 @@ const nextConfig = {
     "buffer",
     "util",
     "process",
+    "node:child_process",
+    "node:fs",
+    "node:path",
+    "node:os",
+    "node:crypto",
+    "node:net",
+    "node:tls",
+    "node:http",
+    "node:https",
+    "node:stream",
+    "node:buffer",
+    "node:util",
+    "node:process",
   ],
   transpilePackages: ["@omniroute/open-sse", "@lobehub/icons", "fumadocs-ui", "fumadocs-core"],
   allowedDevOrigins: ["localhost", "127.0.0.1", "192.168.0.250"],
@@ -382,7 +395,30 @@ const nextConfig = {
     // TODO: Re-enable after fixing all sub-component useTranslations scope issues
     ignoreBuildErrors: true,
   },
-  webpack(config, { dev, webpack }) {
+  webpack(config, { dev, isServer, webpack }) {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+        os: false,
+        path: false,
+        crypto: false,
+        child_process: false,
+        net: false,
+        tls: false,
+      };
+      // Strip the `node:` scheme so browser bundles fall back to the stubs
+      // above. Guarded: the webpack-config unit-test fixture invokes this
+      // function with a partial mock (no `plugins` array / no webpack impl),
+      // so only push when both exist.
+      if (Array.isArray(config.plugins) && typeof webpack?.NormalModuleReplacementPlugin === "function") {
+        config.plugins.push(
+          new webpack.NormalModuleReplacementPlugin(/^node:(.*)$/, (resource) => {
+            resource.request = resource.request.replace(/^node:/, "");
+          })
+        );
+      }
+    }
     config.ignoreWarnings = [
       ...(config.ignoreWarnings || []),
       isNextIntlExtractorDynamicImportWarning,

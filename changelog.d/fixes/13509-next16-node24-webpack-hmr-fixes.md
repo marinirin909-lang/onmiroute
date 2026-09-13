@@ -1,0 +1,3 @@
+- **fix(dashboard):** resolve Next 16 Webpack `node:fs` scheme imports and login page unmounted state warning
+- **fix(dashboard):** guard the `node:`-prefix NormalModuleReplacementPlugin against test-fixture webpack mocks
+- **fix(providers):** use `process.getBuiltinModule` in `cursorAgentCliVersion` so FS detection and disk cache work in ESM server bundles
