@@ -540,11 +540,24 @@ export function deleteCompletedBatches(scope: DeleteCompletedBatchesScope): {
     );
     const sweepKey = db.transaction(() => {
       const totals = { deletedBatches: 0, deletedFiles: 0 };
+      let previousFirstId: string | null = null;
       for (;;) {
         const ids = (keyChunk.all(apiKeyId, INSTANCE_SWEEP_CHUNK) as Array<{ id: string }>).map(
           (r) => r.id
         );
         if (ids.length === 0) break;
+        // Forward-progress guard. The chunk SELECT is `ORDER BY rowid`, so a
+        // chunk that still STARTS with the id we just swept means the DELETE
+        // removed nothing and this loop would spin forever. Throw instead of
+        // hanging (a concurrent deleter, or a swallowed DELETE, must not wedge
+        // the request thread). Key mode is one outer transaction, so throwing
+        // rolls the whole sweep back.
+        if (ids[0] === previousFirstId) {
+          throw new Error(
+            "deleteCompletedBatches: chunk sweep made no forward progress (first id repeated)"
+          );
+        }
+        previousFirstId = ids[0];
         const part = sweepIds(ids);
         totals.deletedBatches += part.deletedBatches;
         totals.deletedFiles += part.deletedFiles;
@@ -558,9 +571,19 @@ export function deleteCompletedBatches(scope: DeleteCompletedBatchesScope): {
   const nextChunk = db.prepare(
     "SELECT id FROM batches WHERE status = 'completed' ORDER BY rowid LIMIT ?"
   );
+  let previousFirstId: string | null = null;
   for (;;) {
     const ids = (nextChunk.all(INSTANCE_SWEEP_CHUNK) as Array<{ id: string }>).map((r) => r.id);
     if (ids.length === 0) break;
+    // Forward-progress guard, same reasoning as key mode above. Instance mode
+    // commits per chunk, so throwing here leaves the already-committed chunks
+    // in place and rethrows (SEC-D) rather than looping forever.
+    if (ids[0] === previousFirstId) {
+      throw new Error(
+        "deleteCompletedBatches: chunk sweep made no forward progress (first id repeated)"
+      );
+    }
+    previousFirstId = ids[0];
     const part = sweepIds(ids);
     totals.deletedBatches += part.deletedBatches;
     totals.deletedFiles += part.deletedFiles;
