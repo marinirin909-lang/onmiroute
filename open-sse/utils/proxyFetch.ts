@@ -611,6 +611,7 @@ export async function runWithProxyContext(
   // only if the probe resolves UNREACHABLE while the request is still in flight
   // do we fail fast with PROXY_UNREACHABLE (503).
   const isVercelRelay = isRelayType((effectiveProxyConfig as { type?: string })?.type);
+  const isSocks = Boolean(resolvedProxyUrl && new URL(resolvedProxyUrl).protocol === "socks5:");
   let unreachableProbe: Promise<boolean> | null = null;
   // Nested same-context call (the active proxyContext already IS this config):
   // skip the reachability probe and family pre-check — the outer scope already
@@ -628,7 +629,7 @@ export async function runWithProxyContext(
         );
         return runDirect();
       }
-    } else {
+    } else if (!isSocks) {
       // Fire the probe WITHOUT awaiting; dispatch optimistically below.
       unreachableProbe = isProxyReachable(resolvedProxyUrl);
     }
