@@ -11501,6 +11501,14 @@ paths:
       responses:
         "200":
           description: OK
+  /api/settings/proxies/pool/egress-observation:
+    get:
+      tags:
+        - Settings
+      summary: "GET settings › proxies › pool › egress observation"
+      responses:
+        "200":
+          description: OK
   /api/settings/proxy/cloudflare-deploy:
     post:
       tags:
