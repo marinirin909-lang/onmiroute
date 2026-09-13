@@ -19,12 +19,16 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CURSOR_AGENT_CLI_VERSION } from "./cursorAgentCliVersion.constants.ts";
 
 /**
- * Pinned Agent CLI build id used when no local install is found (typical
- * headless OmniRoute). Bump when refreshing Cursor CLI impersonation.
+ * Re-exported so this module's public API is unchanged. The value itself lives
+ * in the client-safe `./cursorAgentCliVersion.constants.ts` (no Node builtins);
+ * browser-bundleable callers must import it from there, because importing THIS
+ * module pulls `node:fs` into the client chunk graph and Turbopack then refuses
+ * to write the page endpoint (see the constants file for the full chain).
  */
-export const CURSOR_AGENT_CLI_VERSION = "2026.07.08-0c04a8a";
+export { CURSOR_AGENT_CLI_VERSION };
 
 const VERSION_ID_RE = /^\d{4}\.\d{2}\.\d{2}-[0-9a-f]+$/;
 const CACHE_TTL_MS = 60 * 60 * 1000;

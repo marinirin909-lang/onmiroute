@@ -19,7 +19,13 @@ import {
   GROK_BUILD_TOKEN_URL,
 } from "@omniroute/open-sse/config/grokBuild.ts";
 import { resolvePublicCred } from "@omniroute/open-sse/utils/publicCreds.ts";
-import { CURSOR_AGENT_CLI_VERSION } from "@omniroute/open-sse/utils/cursorAgentCliVersion.ts";
+// Import the constant from the client-safe half of the module: this file is
+// reachable from client components (ModelSelectModal → @/shared/constants/models
+// → open-sse provider registry → codebuddy-cn → here), so it must not pull in
+// cursorAgentCliVersion.ts's node:fs/node:os/node:path machinery — Turbopack
+// fails the client chunk with "does not support external modules (request:
+// node:fs)" and /login + /dashboard stop compiling.
+import { CURSOR_AGENT_CLI_VERSION } from "@omniroute/open-sse/utils/cursorAgentCliVersion.constants.ts";
 import { buildGitLabOAuthEndpoints, GITLAB_DUO_DEFAULT_BASE_URL } from "../gitlab";
 
 /**
